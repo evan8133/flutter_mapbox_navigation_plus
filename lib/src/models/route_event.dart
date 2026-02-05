@@ -16,8 +16,10 @@ class RouteEvent {
     try {
       eventType = MapBoxEvent.values
           .firstWhere((e) => e.toString().split('.').last == json['eventType']);
+    } on StateError catch (_) {
+      // TODO: handle error
     } catch (e) {
-      // TODO handle the error
+      // TODO: handle other errors
     }
 
     final dataJson = json['data'];

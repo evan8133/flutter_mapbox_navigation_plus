@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -56,7 +57,7 @@ class MapBoxNavigationView extends StatelessWidget {
           );
         },
         onCreatePlatformView: (params) {
-          return PlatformViewsService.initExpensiveAndroidView(
+          final controller = PlatformViewsService.initExpensiveAndroidView(
             id: params.id,
             viewType: viewType,
             layoutDirection: TextDirection.ltr,
@@ -67,8 +68,9 @@ class MapBoxNavigationView extends StatelessWidget {
             },
           )
             ..addOnPlatformViewCreatedListener(params.onPlatformViewCreated)
-            ..addOnPlatformViewCreatedListener(_onPlatformViewCreated)
-            ..create();
+            ..addOnPlatformViewCreatedListener(_onPlatformViewCreated);
+          unawaited(controller.create());
+          return controller;
         },
       );
     } else if (Platform.isIOS) {

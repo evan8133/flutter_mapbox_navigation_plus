@@ -234,7 +234,7 @@ class MapBoxOptions {
 
     return newOptions.toMap()
       ..removeWhere(
-        (String key, dynamic value) => prevOptionsMap[key] == value,
+        (key, dynamic value) => prevOptionsMap[key] == value,
       );
   }
 }

@@ -83,7 +83,7 @@ class MapBoxNavigationViewController {
     }
 
     var i = 0;
-    final wayPointMap = {for (var e in pointList) i++: e};
+    final wayPointMap = {for (final e in pointList) i++: e};
 
     var args = <String, dynamic>{};
     if (options != null) args = options.toMap();
@@ -102,7 +102,7 @@ class MapBoxNavigationViewController {
 
   /// Clear the built route and resets the map
   Future<bool?> clearRoute() async {
-    return _methodChannel.invokeMethod('clearRoute', null);
+    return _methodChannel.invokeMethod('clearRoute');
   }
 
   /// Starts Free Drive Mode
@@ -122,7 +122,7 @@ class MapBoxNavigationViewController {
 
   ///Ends Navigation and Closes the Navigation View
   Future<bool?> finishNavigation() async {
-    final success = await _methodChannel.invokeMethod('finishNavigation', null);
+    final success = await _methodChannel.invokeMethod('finishNavigation');
     return success as bool?;
   }
 
@@ -138,7 +138,7 @@ class MapBoxNavigationViewController {
   /// Call this to cancel the subscription to route events
   /// Add here future disposing methods
   void dispose() {
-    _routeEventSubscription.cancel();
+    unawaited(_routeEventSubscription.cancel());
   }
 
   void _onProgressData(RouteEvent event) {
