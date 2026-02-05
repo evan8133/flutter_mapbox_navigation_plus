@@ -1,5 +1,3 @@
-source 'https://github.com/CocoaPods/Specs.git'
-source 'https://github.com/mapbox/cocoapods-specs.git'
 # Uncomment this line to define a global platform for your project
 platform :ios, '15.5'
 
