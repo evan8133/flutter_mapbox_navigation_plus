@@ -2,8 +2,8 @@ import Flutter
 import UIKit
 import MapboxMaps
 import MapboxDirections
-import MapboxCoreNavigation
-import MapboxNavigation
+import MapboxNavigationCore
+import MapboxNavigationUIKit
 
 public class FlutterMapboxNavigationPlugin: NavigationFactory, FlutterPlugin {
   public static func register(with registrar: FlutterPluginRegistrar) {

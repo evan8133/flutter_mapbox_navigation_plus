@@ -1,5 +1,5 @@
 import MapboxMaps
-import MapboxNavigation
+import MapboxNavigationUIKit
 import MapboxMaps
 
 class CustomDayStyle: DayStyle {
@@ -14,7 +14,7 @@ class CustomDayStyle: DayStyle {
         initStyle()
         if(url != nil)
         {
-            mapStyleURL = URL(string: url!) ?? URL(string: StyleURI.navigationDay.rawValue)!
+            mapStyleURL = URL(string: url!) ?? URL(string: StyleURI.standard.rawValue)!
             previewMapStyleURL = mapStyleURL
         }
     }
@@ -22,7 +22,7 @@ class CustomDayStyle: DayStyle {
     func initStyle()
     {
         // Use a custom map style.
-        mapStyleURL = URL(string: StyleURI.navigationDay.rawValue)!
+        mapStyleURL = URL(string: StyleURI.standard.rawValue)!
         previewMapStyleURL = mapStyleURL
 
         // Specify that the style should be used during the day.

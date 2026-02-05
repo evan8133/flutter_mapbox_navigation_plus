@@ -2,8 +2,9 @@ import Flutter
 import UIKit
 import MapboxMaps
 import MapboxDirections
-import MapboxCoreNavigation
-import MapboxNavigation
+import MapboxNavigationCore
+import MapboxNavigationUIKit
+import Combine
 
 public class NavigationFactory : NSObject, FlutterStreamHandler
 {
@@ -17,7 +18,7 @@ public class NavigationFactory : NSObject, FlutterStreamHandler
     var _distanceRemaining: Double?
     var _durationRemaining: Double?
     var _navigationMode: String?
-    var _routes: [Route]?
+    var _navigationRoutes: NavigationRoutes?
     var _wayPointOrder = [Int:Waypoint]()
     var _wayPoints = [Waypoint]()
     var _lastKnownLocation: CLLocation?
@@ -40,12 +41,15 @@ public class NavigationFactory : NSObject, FlutterStreamHandler
     var _showReportFeedbackButton = true
     var _showEndOfRouteFeedback = true
     var _enableOnMapTapCallback = false
-    var navigationDirections: Directions?
+    
+    // Navigation SDK v3 components
+    var mapboxNavigationProvider: MapboxNavigationProvider?
+    var mapboxNavigation: MapboxNavigation?
+    private var subscriptions = Set<AnyCancellable>()
     
     func addWayPoints(arguments: NSDictionary?, result: @escaping FlutterResult)
     {
-
-        guard var locations = getLocationsFromFlutterArgument(arguments: arguments) else { return }
+        guard let locations = getLocationsFromFlutterArgument(arguments: arguments) else { return }
 
         var nextIndex = 1
         for loc in locations
@@ -76,7 +80,7 @@ public class NavigationFactory : NSObject, FlutterStreamHandler
         _wayPoints.removeAll()
         _wayPointOrder.removeAll()
         
-        guard var locations = getLocationsFromFlutterArgument(arguments: arguments) else { return }
+        guard let locations = getLocationsFromFlutterArgument(arguments: arguments) else { return }
         
         for loc in locations
         {
@@ -114,71 +118,78 @@ public class NavigationFactory : NSObject, FlutterStreamHandler
     
     func startNavigationWithWayPoints(wayPoints: [Waypoint], flutterResult: @escaping FlutterResult, isUpdatingWaypoints: Bool)
     {
-        let simulationMode: SimulationMode = _simulateRoute ? .always : .never
         setNavigationOptions(wayPoints: wayPoints)
         
-        Directions.shared.calculate(_options!) { [weak self](session, result) in
-            guard let strongSelf = self else { return }
-            switch result {
-            case .failure(let error):
-                strongSelf.sendEvent(eventType: MapBoxEventType.route_build_failed)
-                flutterResult("An error occured while calculating the route \(error.localizedDescription)")
-            case .success(let response):
-                guard let routes = response.routes else { return }
-                //TODO: if more than one route found, give user option to select one: DOES NOT WORK
-                if(routes.count > 1 && strongSelf.ALLOW_ROUTE_SELECTION)
-                {
-                    //show map to select a specific route
-                    strongSelf._routes = routes
-                    let routeOptionsView = RouteOptionsViewController(routes: routes, options: strongSelf._options!)
+        // Initialize MapboxNavigationProvider if needed
+        if mapboxNavigationProvider == nil {
+            let config = CoreConfig(
+                locationSource: _simulateRoute ? .simulation(initialLocation: nil) : .live
+            )
+            mapboxNavigationProvider = MapboxNavigationProvider(coreConfig: config)
+            mapboxNavigation = mapboxNavigationProvider?.mapboxNavigation
+        }
+        
+        guard let navigation = mapboxNavigation else {
+            flutterResult("Navigation not initialized")
+            return
+        }
+        
+        let routingProvider = navigation.routingProvider()
+        
+        Task {
+            do {
+                let routeResponse = try await routingProvider.calculateRoutes(options: _options!).value
+                
+                await MainActor.run {
+                    self._navigationRoutes = routeResponse
                     
-                    let flutterViewController = UIApplication.shared.delegate?.window??.rootViewController as! FlutterViewController
-                    flutterViewController.present(routeOptionsView, animated: true, completion: nil)
-                }
-                else
-                {
-                    let navigationService = MapboxNavigationService(routeResponse: response, routeIndex: 0, routeOptions: strongSelf._options!, simulating: simulationMode)
-                    var dayStyle = CustomDayStyle()
-                    if(strongSelf._mapStyleUrlDay != nil){
-                        dayStyle = CustomDayStyle(url: strongSelf._mapStyleUrlDay)
-                    }
-                    let nightStyle = CustomNightStyle()
-                    if(strongSelf._mapStyleUrlNight != nil){
-                        nightStyle.mapStyleURL = URL(string: strongSelf._mapStyleUrlNight!)!
-                    }
-                    let navigationOptions = NavigationOptions(styles: [dayStyle, nightStyle], navigationService: navigationService)
-                    if (isUpdatingWaypoints) {
-                        strongSelf._navigationViewController?.navigationService.router.updateRoute(with: IndexedRouteResponse(routeResponse: response, routeIndex: 0), routeOptions: strongSelf._options) { success in
-                            if (success) {
-                                flutterResult("true")
-                            } else {
-                                flutterResult("failed to add stop")
-                            }
+                    if isUpdatingWaypoints {
+                        // Update the route for existing navigation
+                        if let navigationViewController = self._navigationViewController {
+                            navigationViewController.navigationMapView?.showcase(routeResponse)
+                            flutterResult("true")
+                        } else {
+                            flutterResult("failed to add stop")
                         }
+                    } else {
+                        self.startNavigation(routes: routeResponse, options: self._options!)
+                        flutterResult(true)
                     }
-                    else {
-                        strongSelf.startNavigation(routeResponse: response, options: strongSelf._options!, navOptions: navigationOptions)
-                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.sendEvent(eventType: MapBoxEventType.route_build_failed)
+                    flutterResult("An error occurred while calculating the route \(error.localizedDescription)")
                 }
             }
         }
-        
     }
     
-    func startNavigation(routeResponse: RouteResponse, options: NavigationRouteOptions, navOptions: NavigationOptions)
+    func startNavigation(routes: NavigationRoutes, options: NavigationRouteOptions)
     {
         isEmbeddedNavigation = false
+        
+        guard let navigation = mapboxNavigation else { return }
+        
         if(self._navigationViewController == nil)
         {
-            self._navigationViewController = NavigationViewController(for: routeResponse, routeIndex: 0, routeOptions: options, navigationOptions: navOptions)
+            self._navigationViewController = NavigationViewController(
+                navigationRoutes: routes,
+                navigationOptions: NavigationOptions(
+                    mapboxNavigation: navigation,
+                    voiceController: navigation.voiceController(),
+                    eventsManager: navigation.eventsManager()
+                )
+            )
             self._navigationViewController!.modalPresentationStyle = .fullScreen
             self._navigationViewController!.delegate = self
-            self._navigationViewController!.navigationMapView!.localizeLabels()
-            self._navigationViewController!.showsReportFeedback = _showReportFeedbackButton
-            self._navigationViewController!.showsEndOfRouteFeedback = _showEndOfRouteFeedback
         }
+        
         let flutterViewController = UIApplication.shared.delegate?.window??.rootViewController as! FlutterViewController
         flutterViewController.present(self._navigationViewController!, animated: true, completion: nil)
+        
+        // Start the navigation
+        navigation.tripSession().startActiveGuidance(with: routes, startLegIndex: 0)
     }
     
     func setNavigationOptions(wayPoints: [Waypoint]) {
@@ -232,35 +243,35 @@ public class NavigationFactory : NSObject, FlutterStreamHandler
     func continueNavigationWithWayPoints(wayPoints: [Waypoint])
     {
         _options?.waypoints = wayPoints
-        Directions.shared.calculate(_options!) { [weak self](session, result) in
-            guard let strongSelf = self else { return }
-            switch result {
-            case .failure(let error):
-                strongSelf.sendEvent(eventType: MapBoxEventType.route_build_failed, data: error.localizedDescription)
-            case .success(let response):
-                strongSelf.sendEvent(eventType: MapBoxEventType.route_built, data: strongSelf.encodeRouteResponse(response: response))
-                guard let routes = response.routes else { return }
-                //TODO: if more than one route found, give user option to select one: DOES NOT WORK
-                if(routes.count > 1 && strongSelf.ALLOW_ROUTE_SELECTION)
-                {
-                    //TODO: show map to select a specific route
-                    
+        
+        guard let navigation = mapboxNavigation else { return }
+        let routingProvider = navigation.routingProvider()
+        
+        Task {
+            do {
+                let routes = try await routingProvider.calculateRoutes(options: _options!).value
+                
+                await MainActor.run {
+                    self.sendEvent(eventType: MapBoxEventType.route_built, data: self.encodeNavigationRoutes(routes: routes))
+                    navigation.tripSession().startActiveGuidance(with: routes, startLegIndex: 0)
                 }
-                else
-                {
-                    strongSelf._navigationViewController?.navigationService.start()
+            } catch {
+                await MainActor.run {
+                    self.sendEvent(eventType: MapBoxEventType.route_build_failed, data: error.localizedDescription)
                 }
             }
         }
-        
     }
     
     func endNavigation(result: FlutterResult?)
     {
         sendEvent(eventType: MapBoxEventType.navigation_finished)
+        
+        // Stop the navigation session
+        mapboxNavigation?.tripSession().startFreeDrive()
+        
         if(self._navigationViewController != nil)
         {
-            self._navigationViewController?.navigationService.endNavigation(feedback: nil)
             if(isEmbeddedNavigation)
             {
                 self._navigationViewController?.view.removeFromSuperview()
@@ -326,53 +337,16 @@ public class NavigationFactory : NSObject, FlutterStreamHandler
     
     func downloadOfflineRoute(arguments: NSDictionary?, flutterResult: @escaping FlutterResult)
     {
-        /*
-         // Create a directions client and store it as a property on the view controller.
-         self.navigationDirections = NavigationDirections(credentials: Directions.shared.credentials)
-         
-         // Fetch available routing tile versions.
-         _ = self.navigationDirections!.fetchAvailableOfflineVersions { (versions, error) in
-         guard let version = versions?.first else { return }
-         
-         let coordinateBounds = CoordinateBounds(southWest: CLLocationCoordinate2DMake(0, 0), northEast: CLLocationCoordinate2DMake(1, 1))
-         
-         // Download tiles using the most recent version.
-         _ = self.navigationDirections!.downloadTiles(in: coordinateBounds, version: version) { (url, response, error) in
-         guard let url = url else {
-         flutterResult(false)
-         preconditionFailure("Unable to locate temporary file.")
-         }
-         
-         guard let outputDirectoryURL = Bundle.mapboxCoreNavigation.suggestedTileURL(version: version) else {
-         flutterResult(false)
-         preconditionFailure("No suggested tile URL.")
-         }
-         try? FileManager.default.createDirectory(at: outputDirectoryURL, withIntermediateDirectories: true, attributes: nil)
-         
-         // Unpack downloaded routing tiles.
-         NavigationDirections.unpackTilePack(at: url, outputDirectoryURL: outputDirectoryURL, progressHandler: { (totalBytes, bytesRemaining) in
-         // Show unpacking progress.
-         }, completionHandler: { (result, error) in
-         // Configure the offline router with the output directory where the tiles have been unpacked.
-         self.navigationDirections!.configureRouter(tilesURL: outputDirectoryURL) { (numberOfTiles) in
-         // Completed, dismiss UI
-         flutterResult(true)
-         }
-         })
-         }
-         }
-         */
+        // Offline routing is handled differently in SDK v3
+        // For now, return false as this requires additional setup
+        flutterResult(false)
     }
     
-    func encodeRouteResponse(response: RouteResponse) -> String {
-        let routes = response.routes
-        
-        if routes != nil && !routes!.isEmpty {
-            let jsonEncoder = JSONEncoder()
-            let jsonData = try! jsonEncoder.encode(response.routes!)
-            return String(data: jsonData, encoding: String.Encoding.utf8) ?? "{}"
+    func encodeNavigationRoutes(routes: NavigationRoutes) -> String {
+        let jsonEncoder = JSONEncoder()
+        if let jsonData = try? jsonEncoder.encode(routes.mainRoute.route) {
+            return String(data: jsonData, encoding: .utf8) ?? "{}"
         }
-        
         return "{}"
     }
     
@@ -396,7 +370,7 @@ extension NavigationFactory : NavigationViewControllerDelegate {
         _distanceRemaining = progress.distanceRemaining
         _durationRemaining = progress.durationRemaining
         sendEvent(eventType: MapBoxEventType.navigation_running)
-        //_currentLegDescription =  progress.currentLeg.description
+        
         if(_eventSink != nil)
         {
             let jsonEncoder = JSONEncoder()
@@ -437,22 +411,5 @@ extension NavigationFactory : NavigationViewControllerDelegate {
     
     public func navigationViewController(_ navigationViewController: NavigationViewController, shouldRerouteFrom location: CLLocation) -> Bool {
         return _shouldReRoute
-    }
-    
-    public func navigationViewController(_ navigationViewController: NavigationViewController, didSubmitArrivalFeedback feedback: EndOfRouteFeedback) {
-        
-        if(_eventSink != nil)
-        {
-            let jsonEncoder = JSONEncoder()
-            
-            let localFeedback = Feedback(rating: feedback.rating, comment: feedback.comment)
-            let feedbackJsonData = try! jsonEncoder.encode(localFeedback)
-            let feedbackJson = String(data: feedbackJsonData, encoding: String.Encoding.ascii)
-            
-            sendEvent(eventType: MapBoxEventType.navigation_finished, data: feedbackJson ?? "")
-            
-            _eventSink = nil
-            
-        }
     }
 }

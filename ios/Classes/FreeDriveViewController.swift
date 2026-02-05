@@ -6,33 +6,47 @@
 //
 
 import UIKit
-import MapboxNavigation
-import MapboxCoreNavigation
+import MapboxNavigationUIKit
+import MapboxNavigationCore
 import MapboxMaps
+import Combine
 
 public class FreeDriveViewController : UIViewController {
 
-    private lazy var navigationMapView = NavigationMapView(frame: view.bounds)
-    private let passiveLocationManager = PassiveLocationManager()
-    private lazy var passiveLocationProvider = PassiveLocationProvider(locationManager: passiveLocationManager)
+    private var navigationMapView: NavigationMapView!
+    private var mapboxNavigationProvider: MapboxNavigationProvider?
+    private var mapboxNavigation: MapboxNavigation?
+    private var subscriptions = Set<AnyCancellable>()
 
     public override func viewDidLoad() {
         super.viewDidLoad()
 
+        setupNavigation()
         setupNavigationMapView()
-        let locationProvider: LocationProvider = passiveLocationProvider
-        navigationMapView.mapView.location.overrideLocationProvider(with: locationProvider)
-        passiveLocationProvider.startUpdatingLocation()
+    }
+    
+    private func setupNavigation() {
+        let config = CoreConfig(locationSource: .live)
+        mapboxNavigationProvider = MapboxNavigationProvider(coreConfig: config)
+        mapboxNavigation = mapboxNavigationProvider?.mapboxNavigation
+        
+        // Start free drive mode
+        mapboxNavigation?.tripSession().startFreeDrive()
     }
 
     private func setupNavigationMapView() {
+        guard let navigation = mapboxNavigation else { return }
+        
+        navigationMapView = NavigationMapView(
+            location: navigation.navigation().locationMatching.map(\.enhancedLocation).eraseToAnyPublisher(),
+            routeProgress: navigation.navigation().routeProgress.map(\.?.routeProgress).eraseToAnyPublisher(),
+            predictiveCacheManager: navigation.predictiveCacheManager
+        )
+        navigationMapView.frame = view.bounds
         navigationMapView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        navigationMapView.userLocationStyle = .puck2D()
 
-        let navigationViewportDataSource = NavigationViewportDataSource(navigationMapView.mapView)
-        navigationViewportDataSource.options.followingCameraOptions.zoomUpdatesAllowed = false
-        navigationViewportDataSource.followingMobileCamera.zoom = 17.0
-        navigationMapView.navigationCamera.viewportDataSource = navigationViewportDataSource
+        // Configure camera to follow the user
+        navigationMapView.navigationCamera.update(cameraState: .following)
 
         view.addSubview(navigationMapView)
     }
